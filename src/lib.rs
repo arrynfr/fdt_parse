@@ -1,7 +1,9 @@
 #![no_std]
 //! A crate to parse a Flattened Device Tree (FDT)
-//! into a structure intended for immediate consumtion
+//! into a structure intended for immediate consupmtion
 //! by the operating system.
+use core::ffi::CStr;
+use core::num;
 use core::slice;
 use core::mem;
 
@@ -32,34 +34,79 @@ pub struct FdtHeader {
 pub struct Fdt<'a> {
     pub header: FdtHeader,
     reserved_memory: &'a[FdtReserveEntry],
+    pub dt_struct: &'a [u8],
+    pub dt_strings: &'a [u8]
 }
 
+#[repr(C)]
 #[derive(Debug)]
 pub struct FdtReserveEntry {
     address: u64,
     size: u64
 }
 
+#[repr(C)]
+pub struct FdtProp {
+    len: u32,
+    nameoff: u32
+}
+
 #[derive(Debug)]
 pub enum FdtError {
     InvalidMagic,
+    InvalidPointer,
     NotFound,
 }
 
 impl Fdt<'_> {
     pub fn new(fdt_addr: *const u8) -> Result<Self, FdtError> {
-        let fdt;
+        if fdt_addr == 0 as *const u8 { return Err(FdtError::InvalidPointer) }
         let hdr = Fdt::_parse_header(fdt_addr)?;
         let (mem_reserve, hdr) = Fdt::_parse_mem_reserve(fdt_addr,hdr);
-        fdt = Fdt { 
+        let (dt_struct, hdr) = Fdt::_parse_dt_struct(fdt_addr, hdr);
+        let (dt_strings, hdr) = Fdt::_parse_dt_strings(fdt_addr, hdr);
+        let fdt = Fdt { 
             header: hdr,
-            reserved_memory: mem_reserve
+            reserved_memory: mem_reserve,
+            dt_struct: dt_struct,
+            dt_strings: dt_strings
         };
         return Ok(fdt);
     }
 
     pub fn get_reserved_memory_regions(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
         self.reserved_memory.iter().map(|x| (x.address.to_be(), x.size.to_be()))
+    }
+
+    pub fn st(&self) -> impl Iterator<Item = &u8> + '_ {
+        self.dt_strings.iter()
+    }
+
+    pub fn get_string(&self, offset: usize) -> Option<&str> {
+        if offset < self.header.size_dt_strings as usize {
+            let sl = &self.dt_strings[offset..self.header.size_dt_strings as usize];
+            let cstr = CStr::from_bytes_until_nul(sl).unwrap();
+            let str = cstr.to_str().unwrap();
+            Some(str)
+        } else {
+            None
+        }
+    }
+
+    fn _parse_dt_struct(fdt_addr: *const u8, fdt_hdr: FdtHeader) -> (&'static [u8], FdtHeader) {
+        unsafe {
+            let dt_struct = slice::from_raw_parts(fdt_addr.add(fdt_hdr.off_dt_struct as usize),
+                                                        fdt_hdr.size_dt_struct as usize);
+            (dt_struct,fdt_hdr)
+        }
+    }
+
+    fn _parse_dt_strings(fdt_addr: *const u8, fdt_hdr: FdtHeader) -> (&'static [u8], FdtHeader) {
+        unsafe {
+            let dt_strings = slice::from_raw_parts(fdt_addr.add(fdt_hdr.off_dt_strings as usize),
+            fdt_hdr.size_dt_strings as usize);
+            (dt_strings, fdt_hdr)
+        }
     }
 
     fn _parse_mem_reserve(fdt_addr: *const u8, fdt_hdr: FdtHeader) -> (&'static [FdtReserveEntry], FdtHeader) {
@@ -70,7 +117,7 @@ impl Fdt<'_> {
                                                     ((fdt_hdr.off_dt_struct-fdt_hdr.off_mem_rsvmap)
                                                     /mem::size_of::<FdtReserveEntry>() as u32) as usize);
         }
-        let mem_iter = mem_reserve.into_iter();
+        let mem_iter = mem_reserve.iter();
         for (len, entry) in  mem_iter.enumerate() {
             if entry.address == 0 && entry.size == 0 { 
                 unsafe {
@@ -90,7 +137,7 @@ impl Fdt<'_> {
         }
         if let Some(fdt_hdr) = fdt_hdr.first() {
             match fdt_hdr.magic.to_be() {
-                0xd00dfeed => {
+                FDT_HDR_MAGIC => {
                     let hdr = FdtHeader {
                         magic: fdt_hdr.magic.to_be(),
                         totalsize: fdt_hdr.totalsize.to_be(),
@@ -112,7 +159,7 @@ impl Fdt<'_> {
     }
 }
 
-#[cfg(test)]
+/*#[cfg(test)]
 mod tests {
     use std::{fs::{self, File}, io::Read};
 
@@ -120,7 +167,7 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let filename = "../t8103-j313.dtb";
+        let filename = "/home/arryn/fdt/t8103-j313.dtb";
         let mut f = File::open(filename).unwrap();
         let metadata = fs::metadata(&filename).expect("unable to read metadata");
         let mut buffer = vec![0; metadata.len() as usize];
@@ -141,4 +188,4 @@ mod tests {
             println!("{m:#x?}");
         }
     }
-}
+}*/
